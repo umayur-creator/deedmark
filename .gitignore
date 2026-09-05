@@ -7,3 +7,4 @@ ui-debug.log
 *.log
 functions/.env
 .DS_Store
+.env
