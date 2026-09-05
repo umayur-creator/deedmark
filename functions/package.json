@@ -1,0 +1,19 @@
+{
+  "name": "deedmark-functions",
+  "private": true,
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "logs": "firebase functions:log"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0",
+    "@google-cloud/documentai": "^8.9.0",
+    "@google-cloud/storage": "^8.0.1",
+    "firebase-admin": "^12.3.0",
+    "firebase-functions": "^7.3.2"
+  }
+}

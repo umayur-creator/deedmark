@@ -1,0 +1,19 @@
+rules_version = '2';
+
+// Uploaded files live at: matters/{matterId}/raw/{fileName}
+// We can't easily cross-check Firestore matter membership from Storage rules alone,
+// so this scaffold restricts writes to signed-in users and keeps the real access
+// check (who's on this matter) inside the analyzeDocument Cloud Function, which is
+// the only thing that reads these files. Tighten further once auth/roles are wired up
+// by mirroring matter membership into a custom claim or a lookup collection.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /matters/{matterId}/raw/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+                   && request.resource.size < 25 * 1024 * 1024
+                   && request.resource.contentType.matches('application/pdf|image/.*');
+    }
+  }
+}

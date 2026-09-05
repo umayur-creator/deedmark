@@ -1,0 +1,65 @@
+rules_version = '2';
+
+// Data model assumed:
+//   users/{uid}                { role: 'partner' | 'junior' | 'client', name }
+//   matters/{matterId}         { partnerId, juniorId, clientId, ... }
+//   matters/{matterId}/documents/{docId}
+//   matters/{matterId}/analysis/{analysisId}
+//
+// Rule of thumb enforced below: a matter is only visible to the three people
+// actually on it (the assigned partner, the assigned junior, and the client),
+// never to "all partners" or "all juniors" by default. Widen deliberately if
+// your firm wants firm-wide visibility for partners.
+
+function isSignedIn() {
+  return request.auth != null;
+}
+
+function userRole() {
+  return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+}
+
+function isPartner() { return isSignedIn() && userRole() == 'partner'; }
+function isJunior() { return isSignedIn() && userRole() == 'junior'; }
+
+function isOnMatter(matterData) {
+  return isSignedIn() && (
+    request.auth.uid == matterData.partnerId ||
+    request.auth.uid == matterData.juniorId ||
+    request.auth.uid == matterData.clientId
+  );
+}
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /users/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      // Role changes should go through a Cloud Function (admin SDK), not client writes.
+      allow write: if false;
+    }
+
+    match /matters/{matterId} {
+      allow read: if isOnMatter(resource.data);
+      // Only a partner can create a matter; junior/client fields get set at creation.
+      allow create: if isPartner();
+      // Partner or the assigned junior can update matter fields (status, comments, etc).
+      allow update: if isPartner() || (isJunior() && request.auth.uid == resource.data.juniorId);
+      allow delete: if false;
+
+      match /documents/{docId} {
+        allow read: if isOnMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
+        // Uploads normally go through the analyzeDocument Cloud Function, which writes
+        // with admin privileges — this direct-write path covers manual/edge cases.
+        allow create: if isOnMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
+        allow update, delete: if isPartner();
+      }
+
+      match /analysis/{analysisId} {
+        allow read: if isOnMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
+        // Analysis documents are written by the Cloud Function (admin SDK) only.
+        allow write: if false;
+      }
+    }
+  }
+}
