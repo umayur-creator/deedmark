@@ -8,3 +8,4 @@ ui-debug.log
 functions/.env
 .DS_Store
 .env
+emulator-data/

@@ -1,63 +1,106 @@
 rules_version = '2';
 
-// Data model assumed:
-//   users/{uid}                { role: 'partner' | 'junior' | 'client', name }
-//   matters/{matterId}         { partnerId, juniorId, clientId, ... }
+// Data model:
+//   organizations/{orgId}                  { name, createdAt, createdBy }
+//   organizations/{orgId}/members/{uid}    { role: 'admin' | 'partner' | 'associate', email, joinedAt }
+//   userOrgMembership/{uid}                { orgId, role, email }
+//   matters/{matterId}                     { orgId, partnerId, associateIds: [...], clientIds: [...], ... }
 //   matters/{matterId}/documents/{docId}
 //   matters/{matterId}/analysis/{analysisId}
-//
-// Rule of thumb enforced below: a matter is only visible to the three people
-// actually on it (the assigned partner, the assigned junior, and the client),
-// never to "all partners" or "all juniors" by default. Widen deliberately if
-// your firm wants firm-wide visibility for partners.
-
-function isSignedIn() {
-  return request.auth != null;
-}
-
-function userRole() {
-  return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-}
-
-function isPartner() { return isSignedIn() && userRole() == 'partner'; }
-function isJunior() { return isSignedIn() && userRole() == 'junior'; }
-
-function isOnMatter(matterData) {
-  return isSignedIn() && (
-    request.auth.uid == matterData.partnerId ||
-    request.auth.uid == matterData.juniorId ||
-    request.auth.uid == matterData.clientId
-  );
-}
+//   matters/{matterId}/documents/{docId}/highlights/{highlightId}
+//   matters/{matterId}/documents/{docId}/highlights/{highlightId}/comments/{commentId}
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function orgMembership() {
+      return get(/databases/$(database)/documents/userOrgMembership/$(request.auth.uid)).data;
+    }
+
+    function isOrgMember(orgId) {
+      return isSignedIn() && orgMembership().orgId == orgId;
+    }
+
+    function orgRole(orgId) {
+      return isOrgMember(orgId) ? orgMembership().role : null;
+    }
+
+    function isOrgAdmin(orgId) {
+      return orgRole(orgId) == 'admin';
+    }
+
+    function isOnMatterTeam(matterData) {
+      return isSignedIn() && (
+        request.auth.uid == matterData.partnerId ||
+        request.auth.uid in matterData.associateIds
+      );
+    }
+
+    function canSeeMatter(matterData) {
+      return isOrgAdmin(matterData.orgId) ||
+             (matterData.status == 'unclaimed' && isOrgMember(matterData.orgId)) ||
+             isOnMatterTeam(matterData);
+    }
+
     match /users/{uid} {
       allow read: if isSignedIn() && request.auth.uid == uid;
-      // Role changes should go through a Cloud Function (admin SDK), not client writes.
       allow write: if false;
     }
 
+    match /userOrgMembership/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /organizations/{orgId} {
+      allow read: if isOrgMember(orgId);
+      allow write: if false;
+
+      match /members/{memberUid} {
+        allow read: if isOrgMember(orgId);
+        allow write: if false;
+      }
+
+      match /invites/{inviteId} {
+        allow read, write: if isOrgAdmin(orgId);
+      }
+
+      match /clients/{clientId} {
+        allow read: if isOrgMember(orgId);
+        allow write: if false;
+      }
+    }
+
     match /matters/{matterId} {
-      allow read: if isOnMatter(resource.data);
-      // Only a partner can create a matter; junior/client fields get set at creation.
-      allow create: if isPartner();
-      // Partner or the assigned junior can update matter fields (status, comments, etc).
-      allow update: if isPartner() || (isJunior() && request.auth.uid == resource.data.juniorId);
+      allow read: if isSignedIn() &&
+        get(/databases/$(database)/documents/userOrgMembership/$(request.auth.uid)).data.orgId == resource.data.orgId;
+      allow create: if false;
+      allow update: if isOrgAdmin(request.resource.data.orgId) ||
+                       (isOnMatterTeam(resource.data) && orgRole(resource.data.orgId) == 'partner');
       allow delete: if false;
 
       match /documents/{docId} {
-        allow read: if isOnMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
-        // Uploads normally go through the analyzeDocument Cloud Function, which writes
-        // with admin privileges — this direct-write path covers manual/edge cases.
-        allow create: if isOnMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
-        allow update, delete: if isPartner();
+        allow read: if canSeeMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
+        allow create: if canSeeMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
+        allow update, delete: if isOrgAdmin(get(/databases/$(database)/documents/matters/$(matterId)).data.orgId);
+
+        match /highlights/{highlightId} {
+          allow read, create: if canSeeMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
+          allow update, delete: if isOrgAdmin(get(/databases/$(database)/documents/matters/$(matterId)).data.orgId);
+
+          match /comments/{commentId} {
+            allow read, create: if canSeeMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
+            allow update, delete: if isOrgAdmin(get(/databases/$(database)/documents/matters/$(matterId)).data.orgId);
+          }
+        }
       }
 
       match /analysis/{analysisId} {
-        allow read: if isOnMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
-        // Analysis documents are written by the Cloud Function (admin SDK) only.
+        allow read: if canSeeMatter(get(/databases/$(database)/documents/matters/$(matterId)).data);
         allow write: if false;
       }
     }

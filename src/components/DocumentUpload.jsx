@@ -23,10 +23,12 @@ export default function DocumentUpload({ matterId, onResult, onOverallResult, on
     setItems((prev) => prev.filter((_, i) => i !== index));
   }
 
-  async function handleSubmit(e) {
+   async function handleSubmit(e) {
     e.preventDefault();
     if (items.length === 0 || submitting) return;
     setSubmitting(true);
+
+    let anySucceeded = false;
 
     for (let i = 0; i < items.length; i++) {
       if (items[i].status === 'done') continue;
@@ -36,13 +38,13 @@ export default function DocumentUpload({ matterId, onResult, onOverallResult, on
         const result = await analyzeDocument(items[i].file, matterId);
         updateItem(i, { status: 'done' });
         onResult(result, items[i].file);
+        anySucceeded = true;
       } catch (err) {
         console.error('analyzeDocument failed', items[i].file.name, err);
         updateItem(i, { status: 'error', error: err.message || 'Something went wrong analyzing this document.' });
       }
     }
 
-    const anySucceeded = items.some((it) => it.status === 'done');
     if (anySucceeded && onOverallResult) {
       try {
         onOverallStatus?.('generating');

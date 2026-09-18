@@ -43,31 +43,17 @@ async function assertOnMatter(uid, matterId) {
   const matterRef = db.doc(`matters/${matterId}`);
   const matterSnap = await matterRef.get();
 
-  // Local-testing convenience only: real auth/matter-creation isn't built yet, so
-  // there's no way to have a legitimate matter with a signed-in user attached. In the
-  // emulator (never in production — see the FUNCTIONS_EMULATOR check), auto-create a
-  // demo matter owned by whoever is signed in, so the OCR -> Claude pipeline can be
-  // tested end to end. Delete this whole isEmulator block once real matter creation
-  // (a partner picking a client + junior) exists.
-  const isEmulator = process.env.FUNCTIONS_EMULATOR === 'true';
-  if (!matterSnap.exists && isEmulator) {
-    const demoMatter = {
-      partnerId: uid,
-      juniorId: uid,
-      clientId: uid,
-      clientName: 'Demo Client (emulator)',
-      status: 'draft',
-      createdAt: FieldValue.serverTimestamp(),
-    };
-    await matterRef.set(demoMatter);
-    return demoMatter;
-  }
-
   if (!matterSnap.exists) {
     throw new HttpsError('not-found', `Matter ${matterId} does not exist.`);
   }
-  const matter = matterSnap.data();
-  const allowed = [matter.partnerId, matter.juniorId, matter.clientId].includes(uid);
+  const matter = matterSnap.data();      const membershipSnap = await db.doc(`userOrgMembership/${uid}`).get();
+  const membership = membershipSnap.exists ? membershipSnap.data() : null;
+  const isAdmin = membership && membership.orgId === matter.orgId && membership.role === 'admin';
+
+  const allowed = isAdmin ||
+                   matter.partnerId === uid ||
+                   (matter.associateIds || []).includes(uid) ||
+                   matter.clientId === uid;
   if (!allowed) {
     throw new HttpsError('permission-denied', 'You are not on this matter.');
   }
@@ -130,7 +116,12 @@ certificate, affidavit, etc.) in two forms:
 Where the OCR text and what you can see in the document itself disagree — especially
 for names, dates, survey numbers, or handwritten margin notes — trust what you can
 read directly in the document. If a detail (like a party's name) is genuinely
-illegible even to you, say so explicitly in "flags" rather than guessing.`;
+illegible even to you, say so explicitly in "flags" rather than guessing.
+
+For each item in missingDocs and flags, if it relates to a specific part of this
+document, include the page number and a short exact quoted phrase (verbatim, a few
+words) from that spot so it can be located again. Omit page and quote if the item
+doesn't tie to one specific location (e.g. a document that's entirely absent).`;
 
   const content = [];
 
@@ -175,17 +166,33 @@ illegible even to you, say so explicitly in "flags" rather than guessing.`;
             required: ['date', 'instrument', 'effect'],
           },
         },
-        missingDocs: {
+               missingDocs: {
           type: 'array',
-          items: { type: 'string' },
+          items: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'The missing document or check itself' },
+              page: { type: 'integer', description: 'Page number in this document this relates to, if it points to a specific spot. Omit if not tied to one page.' },
+              quote: { type: 'string', description: 'A short exact phrase (verbatim, a few words) from that page, to help locate it later. Omit if not applicable.' },
+            },
+            required: ['text'],
+          },
           description: 'Specific documents or checks a junior should chase, given what THIS document references but does not include',
         },
         flags: {
           type: 'array',
-          items: { type: 'string' },
+          items: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'The issue itself' },
+              page: { type: 'integer', description: 'Page number in this document this relates to, if it points to a specific spot. Omit if not tied to one page.' },
+              quote: { type: 'string', description: 'A short exact phrase (verbatim, a few words) from that page, to help locate it later. Omit if not applicable.' },
+            },
+            required: ['text'],
+          },
           description: 'Anything inconsistent, incomplete, legally risky, or illegible in this document',
         },
-      },
+                },
       required: ['docType', 'brief', 'chainOfTitle', 'missingDocs', 'flags'],
     },
   };
@@ -226,7 +233,7 @@ exports.analyzeDocument = onCall(
     const docRef = await db.collection(`matters/${matterId}/documents`).add({
       fileName,
       storagePath,
-      docType: analysis.docType,
+      docType: analysis.docType || 'Unknown',
       ocrText,
       uploadedBy: request.auth.uid,
       createdAt: FieldValue.serverTimestamp(),
@@ -241,7 +248,7 @@ exports.analyzeDocument = onCall(
       createdAt: FieldValue.serverTimestamp(),
     });
 
-    return analysis;
+      return { ...analysis, documentId: docRef.id, storagePath };
   }
 );
 
@@ -269,10 +276,17 @@ a whole -- not just concatenate them. Specifically:
   names, a sale deed date that doesn't match what a later document assumes) as their
   own flags -- these matter more than single-document issues.
 - Give an overall plain-English brief (4-6 sentences) of what the full document set
-  currently establishes about this property's title, and what is still open.`;
+  currently establishes about this property's title, and what is still open.
+
+For each item in missingDocs and flags, if the underlying per-document data you were
+given includes a page and quote, carry those forward along with the source document id,
+so the item can still be traced back to its exact location. Only omit page/quote/source
+if the item genuinely spans multiple documents or doesn't tie to one specific spot.
+For source, always use the number shown as "id: N" next to each document above --
+not its "Document N" position label.`;
 
   const docsSummary = docs.map((d, i) => (
-    `Document ${i + 1}: ${d.fileName}\n` +
+    `Document ${i + 1} (id: ${i}): ${d.fileName}\n` +
     `Type: ${d.docType || 'Unknown'}\n` +
     `Brief: ${d.brief || ''}\n` +
     `Chain of title: ${JSON.stringify(d.chainOfTitle || [])}\n` +
@@ -300,14 +314,32 @@ a whole -- not just concatenate them. Specifically:
             required: ['date', 'instrument', 'effect', 'source'],
           },
         },
-        missingDocs: {
+                missingDocs: {
           type: 'array',
-          items: { type: 'string' },
+          items: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              source: { type: 'integer', description: 'The document id shown in parentheses next to its name above (e.g. "id: 0"), NOT the "Document N" label. Omit if it spans multiple documents or none.' },
+              page: { type: 'integer' },
+              quote: { type: 'string' },
+            },
+            required: ['text'],
+          },
           description: 'Still-outstanding documents or checks, after accounting for what is already uploaded',
         },
         flags: {
           type: 'array',
-          items: { type: 'string' },
+          items: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              source: { type: 'integer', description: 'The document id shown in parentheses next to its name above (e.g. "id: 0"), NOT the "Document N" label. Omit if it spans multiple documents or none.' },
+              page: { type: 'integer' },
+              quote: { type: 'string' },
+            },
+            required: ['text'],
+          },
           description: 'Cross-document contradictions first, then any remaining single-document issues worth carrying forward',
         },
       },
@@ -331,7 +363,7 @@ a whole -- not just concatenate them. Specifically:
   return toolUse.input;
 }
 exports.generateMatterAssessment = onCall(
-  { secrets: [ANTHROPIC_API_KEY], region: 'asia-south1', timeoutSeconds: 120 },
+  { secrets: [ANTHROPIC_API_KEY], region: 'asia-south1', timeoutSeconds: 540 },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Sign in required.');
@@ -343,10 +375,10 @@ exports.generateMatterAssessment = onCall(
 
     await assertOnMatter(request.auth.uid, matterId);
 
-    const [documentsSnap, analysisSnap] = await Promise.all([
-      db.collection(`matters/${matterId}/documents`).get(),
-      db.collection(`matters/${matterId}/analysis`).get(),
-    ]);
+   const [documentsSnap, analysisSnap] = await Promise.all([
+  db.collection(`matters/${matterId}/documents`).get(),
+  db.collection(`matters/${matterId}/analysis`).orderBy('createdAt').get(),
+]);
 
     if (analysisSnap.empty) {
       throw new HttpsError('failed-precondition', 'No analyzed documents found for this matter yet.');
@@ -375,5 +407,248 @@ exports.generateMatterAssessment = onCall(
     );
 
     return assessment;
+  }
+);
+
+exports.createOrganization = onCall(
+  { region: 'asia-south1' },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Sign in required.');
+    }
+    const { orgName } = request.data || {};
+    if (!orgName || typeof orgName !== 'string' || !orgName.trim()) {
+      throw new HttpsError('invalid-argument', 'Organization name is required.');
+    }
+
+    const uid = request.auth.uid;
+    const email = request.auth.token.email || null;
+
+    const membershipRef = db.doc(`userOrgMembership/${uid}`);
+    const existing = await membershipRef.get();
+    if (existing.exists) {
+      throw new HttpsError('already-exists', 'You already belong to an organization.');
+    }
+
+    const orgRef = db.collection('organizations').doc();
+    const batch = db.batch();
+
+    batch.set(orgRef, {
+      name: orgName.trim(),
+      createdAt: FieldValue.serverTimestamp(),
+      createdBy: uid,
+    });
+    batch.set(orgRef.collection('members').doc(uid), {
+      role: 'admin',
+      email,
+      joinedAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(membershipRef, {
+      orgId: orgRef.id,
+      role: 'admin',
+      email,
+    });
+
+    await batch.commit();
+    return { orgId: orgRef.id, role: 'admin' };
+  }
+);
+
+exports.createMatter = onCall(
+  { region: 'asia-south1' },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Sign in required.');
+    }
+    const uid = request.auth.uid;
+
+    const membershipSnap = await db.doc(`userOrgMembership/${uid}`).get();
+       if (!membershipSnap.exists) {
+      throw new HttpsError('failed-precondition', 'You must belong to an organization to create a matter.');
+    }
+    const membership = membershipSnap.data();
+
+    const { clientName } = request.data || {};
+
+    const matterRef = db.collection('matters').doc();
+    await matterRef.set({
+      orgId: membership.orgId,
+      partnerId: uid,           // creator is the partner on this matter, single-partner model for now
+      associateIds: [],
+      clientName: clientName || null,
+      status: 'active',
+      createdAt: FieldValue.serverTimestamp(),
+      createdBy: uid,
+    });
+
+    return { matterId: matterRef.id };
+  }
+);
+
+exports.createMatterWithClient = onCall(
+  { region: 'asia-south1' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+    const uid = request.auth.uid;
+
+    const membershipSnap = await db.doc(`userOrgMembership/${uid}`).get();
+    if (!membershipSnap.exists) {
+      throw new HttpsError('failed-precondition', 'You must belong to an organization.');
+    }
+    const membership = membershipSnap.data();
+    const { orgId, role } = membership;
+
+    const {
+      clientId,
+      newClient,
+      district, taluk, hobli, village, surveyNo, serviceRequested,
+      claimForSelf,
+    } = request.data || {};
+
+    if (!clientId && !newClient) {
+      throw new HttpsError('invalid-argument', 'A client must be selected or provided.');
+    }
+    if (newClient && (!newClient.firstName || !newClient.mobile1)) {
+      throw new HttpsError('invalid-argument', 'New client requires at least first name and one mobile number.');
+    }
+
+    let finalClientId = clientId;
+    const batch = db.batch();
+
+    if (!finalClientId) {
+      const clientRef = db.collection(`organizations/${orgId}/clients`).doc();
+      batch.set(clientRef, {
+        salutation: newClient.salutation || '',
+        firstName: newClient.firstName,
+        lastName: newClient.lastName || '',
+        address: newClient.address || '',
+        mobile1: newClient.mobile1,
+        mobile2: newClient.mobile2 || '',
+        createdAt: FieldValue.serverTimestamp(),
+        createdBy: uid,
+      });
+      finalClientId = clientRef.id;
+    }
+
+    const shouldClaim = claimForSelf && (role === 'partner' || role === 'admin');
+    const matterRef = db.collection('matters').doc();
+    batch.set(matterRef, {
+      orgId,
+      status: shouldClaim ? 'active' : 'unclaimed',
+      partnerId: shouldClaim ? uid : null,
+      associateIds: role === 'associate' ? [uid] : [],
+      clientId: finalClientId,
+      district: district || '',
+      taluk: taluk || '',
+      hobli: hobli || '',
+      village: village || '',
+      surveyNo: surveyNo || '',
+      serviceRequested: serviceRequested || '',
+      createdAt: FieldValue.serverTimestamp(),
+      createdBy: uid,
+    });
+
+    await batch.commit();
+    return { matterId: matterRef.id, clientId: finalClientId };
+  }
+);
+
+exports.claimMatter = onCall(
+  { region: 'asia-south1' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+    const uid = request.auth.uid;
+    const { matterId } = request.data || {};
+
+    const membershipSnap = await db.doc(`userOrgMembership/${uid}`).get();
+    if (!membershipSnap.exists || !['partner', 'admin'].includes(membershipSnap.data().role)) {
+    throw new HttpsError('permission-denied', 'Only a partner or admin can claim a matter.');
+    }
+    const orgId = membershipSnap.data().orgId;
+
+    const matterRef = db.doc(`matters/${matterId}`);
+    return db.runTransaction(async (tx) => {
+      const snap = await tx.get(matterRef);
+      if (!snap.exists) throw new HttpsError('not-found', 'Matter not found.');
+      const matter = snap.data();
+      if (matter.orgId !== orgId) throw new HttpsError('permission-denied', 'Not your organization.');
+      if (matter.status !== 'unclaimed') throw new HttpsError('failed-precondition', 'Already claimed.');
+
+      tx.update(matterRef, { status: 'active', partnerId: uid });
+      return { success: true };
+    });
+  }
+);
+
+exports.inviteToOrg = onCall(
+  { region: 'asia-south1' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+    const uid = request.auth.uid;
+
+    const membershipSnap = await db.doc(`userOrgMembership/${uid}`).get();
+    if (!membershipSnap.exists || membershipSnap.data().role !== 'admin') {
+      throw new HttpsError('permission-denied', 'Only an admin can invite team members.');
+    }
+    const orgId = membershipSnap.data().orgId;
+
+    const { email, role } = request.data || {};
+    if (!email || !['partner', 'associate'].includes(role)) {
+      throw new HttpsError('invalid-argument', 'A valid email and role (partner or associate) are required.');
+    }
+
+    const inviteRef = db.collection(`organizations/${orgId}/invites`).doc();
+    await inviteRef.set({
+      email: email.toLowerCase().trim(),
+      role,
+      invitedBy: uid,
+      createdAt: FieldValue.serverTimestamp(),
+      status: 'pending',
+    });
+
+    return { inviteId: inviteRef.id };
+  }
+);
+
+exports.acceptInvite = onCall(
+  { region: 'asia-south1' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+    const uid = request.auth.uid;
+    const email = (request.auth.token.email || '').toLowerCase();
+
+    const existingMembership = await db.doc(`userOrgMembership/${uid}`).get();
+    if (existingMembership.exists) {
+      throw new HttpsError('already-exists', 'You already belong to an organization.');
+    }
+
+    const { orgId, inviteId } = request.data || {};
+    if (!orgId || !inviteId) {
+      throw new HttpsError('invalid-argument', 'orgId and inviteId are required.');
+    }
+
+    const inviteRef = db.doc(`organizations/${orgId}/invites/${inviteId}`);
+    return db.runTransaction(async (tx) => {
+      const inviteSnap = await tx.get(inviteRef);
+      if (!inviteSnap.exists) throw new HttpsError('not-found', 'Invite not found.');
+      const invite = inviteSnap.data();
+
+      if (invite.status !== 'pending') throw new HttpsError('failed-precondition', 'This invite is no longer valid.');
+      if (invite.email !== email) throw new HttpsError('permission-denied', 'This invite was sent to a different email.');
+
+      tx.set(db.doc(`organizations/${orgId}/members/${uid}`), {
+        role: invite.role,
+        email,
+        joinedAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(db.doc(`userOrgMembership/${uid}`), {
+        orgId,
+        role: invite.role,
+        email,
+      });
+      tx.update(inviteRef, { status: 'accepted', acceptedBy: uid, acceptedAt: FieldValue.serverTimestamp() });
+
+      return { orgId, role: invite.role };
+    });
   }
 );

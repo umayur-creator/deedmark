@@ -7,14 +7,18 @@
   "firestore": {
     "rules": "firestore.rules"
   },
-  "storage": {
+ "storage": [
+  {
+    "target": "default",
     "rules": "storage.rules"
-  },
+  }
+],
+
   "functions": [
     {
       "source": "functions",
       "codebase": "default",
-      "runtime": "nodejs20"
+      "runtime": "nodejs24"
     }
   ],
   "emulators": {
