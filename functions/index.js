@@ -683,3 +683,59 @@ exports.checkPendingInvite = onCall(
     };
   }
 );
+
+exports.listOrgMembers = onCall(
+  { region: 'asia-south1' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+    const uid = request.auth.uid;
+
+    const membershipSnap = await db.doc(`userOrgMembership/${uid}`).get();
+    if (!membershipSnap.exists) throw new HttpsError('permission-denied', 'Not on this organization.');
+    const { orgId } = membershipSnap.data();
+
+    const membersSnap = await db.collection(`organizations/${orgId}/members`).get();
+    const members = membersSnap.docs.map((d) => ({ uid: d.id, ...d.data() }));
+
+    return { members };
+  }
+);
+
+exports.assignAssociate = onCall(
+  { region: 'asia-south1' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+    const uid = request.auth.uid;
+    const { matterId, associateUid } = request.data || {};
+    if (!matterId || !associateUid) {
+      throw new HttpsError('invalid-argument', 'matterId and associateUid are required.');
+    }
+
+    const membershipSnap = await db.doc(`userOrgMembership/${uid}`).get();
+    if (!membershipSnap.exists) throw new HttpsError('permission-denied', 'Not on this organization.');
+    const membership = membershipSnap.data();
+
+    const matterRef = db.doc(`matters/${matterId}`);
+    const matterSnap = await matterRef.get();
+    if (!matterSnap.exists) throw new HttpsError('not-found', 'Matter not found.');
+    const matter = matterSnap.data();
+
+    if (matter.orgId !== membership.orgId) throw new HttpsError('permission-denied', 'Not your organization.');
+    const isAdmin = membership.role === 'admin';
+    const isThisPartner = matter.partnerId === uid;
+    if (!isAdmin && !isThisPartner) {
+      throw new HttpsError('permission-denied', "Only an admin or the matter's partner can assign associates.");
+    }
+
+    const targetMemberSnap = await db.doc(`organizations/${membership.orgId}/members/${associateUid}`).get();
+    if (!targetMemberSnap.exists || targetMemberSnap.data().role !== 'associate') {
+      throw new HttpsError('invalid-argument', 'That person is not an associate in this organization.');
+    }
+
+    await matterRef.update({
+      associateIds: FieldValue.arrayUnion(associateUid),
+    });
+
+    return { success: true };
+  }
+);

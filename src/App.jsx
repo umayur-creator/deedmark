@@ -13,6 +13,7 @@ import MatterBrief from './components/MatterBrief';
 import OverallAssessment from './components/OverallAssessment';
 import DocumentViewer from './components/DocumentViewer';
 import ProfileHeader from './components/ProfileHeader';
+import AssignAssociate from './components/AssignAssociate';
 
 export default function App() {
   const [user, setUser] = useState(undefined);
@@ -25,16 +26,20 @@ export default function App() {
   const [overallStatus, setOverallStatus] = useState('idle');
   const [showDetails, setShowDetails] = useState(false);
   const [viewingDocument, setViewingDocument] = useState(null);
+  const [matterData, setMatterData] = useState(null);
 
   useEffect(() => {
     return onAuthStateChanged(auth, setUser);
   }, []);
 
   useEffect(() => {
+    setMatterId(null);
+    setShowNewMatterForm(false);
     if (!user) {
       setMembership(undefined);
       return;
     }
+
     getDoc(doc(db, `userOrgMembership/${user.uid}`))
       .then((snap) => {
         setMembership(snap.exists() ? snap.data() : null);
@@ -80,13 +85,15 @@ export default function App() {
       });
       setResults(loadedResults);
 
-      if (matterSnap.exists() && matterSnap.data().overallAssessment) {
+           if (matterSnap.exists() && matterSnap.data().overallAssessment) {
         setOverallAssessment(matterSnap.data().overallAssessment);
         setOverallStatus('done');
       } else {
         setOverallAssessment(null);
         setOverallStatus('idle');
       }
+
+      setMatterData(matterSnap.exists() ? matterSnap.data() : null);
     }
 
     loadMatterData().catch((err) => {
@@ -213,8 +220,20 @@ export default function App() {
         <button type="button" onClick={() => setMatterId(null)}>← All matters</button>
         <ProfileHeader user={user} role={membership.role} onSignOut={() => signOut(auth)} />
       </div>
-      <h1>Deedmark</h1>
+            <h1>Deedmark</h1>
       <p>Upload a property document to get a brief, chain of title, and missing docs.</p>
+
+            {matterData && (membership.role === 'admin' || matterData.partnerId === user.uid) && (
+        <AssignAssociate
+          matterId={matterId}
+          currentAssociateIds={matterData.associateIds || []}
+          onAssigned={async () => {
+            const snap = await getDoc(doc(db, `matters/${matterId}`));
+            setMatterData(snap.exists() ? snap.data() : null);
+          }}
+        />
+      )}
+
       <DocumentUpload
         matterId={matterId}
         onResult={handleResult}
