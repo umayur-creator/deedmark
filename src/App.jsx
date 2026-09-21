@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { httpsCallable } from 'firebase/functions';
+import { auth, db, functions } from './firebase';
 import Login from './components/Login';
 import CreateOrganization from './components/CreateOrganization';
+import AcceptInvite from './components/AcceptInvite';
 import NewMatter from './components/NewMatter';
 import MatterList from './components/MatterList';
 import DocumentUpload from './components/DocumentUpload';
@@ -15,6 +17,7 @@ import ProfileHeader from './components/ProfileHeader';
 export default function App() {
   const [user, setUser] = useState(undefined);
   const [membership, setMembership] = useState(undefined);
+  const [pendingInvite, setPendingInvite] = useState(undefined);
   const [matterId, setMatterId] = useState(null);
   const [showNewMatterForm, setShowNewMatterForm] = useState(false);
   const [results, setResults] = useState([]);
@@ -93,7 +96,42 @@ export default function App() {
     return () => { cancelled = true; };
   }, [matterId]);
 
-  if (user === undefined) {
+      useEffect(() => {
+    if (membership !== null || !user) {
+      setPendingInvite(undefined);
+      return;
+    }
+    const call = httpsCallable(functions, 'checkPendingInvite');
+    call()
+      .then((result) => {
+        setPendingInvite(result.data.invite || null);
+      })
+      .catch((err) => {
+        console.error('Failed to check pending invites', err);
+        setPendingInvite(null);
+      });
+  }, [membership, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes of no activity
+    let timer = setTimeout(() => signOut(auth), TIMEOUT_MS);
+
+    function resetTimer() {
+      clearTimeout(timer);
+      timer = setTimeout(() => signOut(auth), TIMEOUT_MS);
+    }
+
+    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+    events.forEach((e) => window.addEventListener(e, resetTimer));
+
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, resetTimer));
+      clearTimeout(timer);
+    };
+  }, [user]);
+
+    if (user === undefined) {
     return <p style={{ textAlign: 'center', marginTop: '4rem', fontFamily: 'sans-serif', color: '#666' }}>Loading…</p>;
   }
 
@@ -106,6 +144,12 @@ export default function App() {
   }
 
   if (!membership) {
+    if (pendingInvite === undefined) {
+      return <p style={{ textAlign: 'center', marginTop: '4rem', fontFamily: 'sans-serif', color: '#666' }}>Loading…</p>;
+    }
+    if (pendingInvite) {
+      return <AcceptInvite invite={pendingInvite} onAccepted={() => window.location.reload()} />;
+    }
     return <CreateOrganization onCreated={() => window.location.reload()} />;
   }
 
@@ -124,7 +168,7 @@ export default function App() {
 
   if (!matterId) {
     return (
-        <MatterList
+      <MatterList
         orgId={membership.orgId}
         uid={user.uid}
         role={membership.role}
@@ -163,7 +207,7 @@ export default function App() {
     );
   }
 
-    return (
+  return (
     <div style={{ maxWidth: 640, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <button type="button" onClick={() => setMatterId(null)}>← All matters</button>
@@ -185,7 +229,7 @@ export default function App() {
         onViewLocation={handleViewLocation}
       />
 
-           {results.length > 0 && (
+      {results.length > 0 && (
         <div style={{ marginTop: '1.5rem' }}>
           <h2 style={{ fontSize: '1.1rem' }}>Documents ({results.length})</h2>
           {results.map((r, i) => (

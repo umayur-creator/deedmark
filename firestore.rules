@@ -50,6 +50,14 @@ service cloud.firestore {
       allow read: if isSignedIn() && request.auth.uid == uid;
       allow write: if false;
     }
+ 
+        // Collection-group rule: needed specifically for the collectionGroup('invites')
+    // query used to find a pending invite by email across all organizations. The
+    // nested rule under organizations/{orgId}/invites/{inviteId} only covers
+    // queries scoped to one known org and does not extend to this broader query.
+     match /{path=**}/invites/{inviteId} {
+      allow read: if isSignedIn();
+    }
 
     match /userOrgMembership/{uid} {
       allow read: if isSignedIn() && request.auth.uid == uid;
@@ -66,7 +74,8 @@ service cloud.firestore {
       }
 
       match /invites/{inviteId} {
-        allow read, write: if isOrgAdmin(orgId);
+        allow read: if isSignedIn() && resource.data.email == request.auth.token.email;
+        allow write: if isOrgAdmin(orgId);
       }
 
       match /clients/{clientId} {

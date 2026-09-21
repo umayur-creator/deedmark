@@ -4,10 +4,12 @@ import { db, auth } from '../firebase';
 import { signOut } from 'firebase/auth';
 import ProfileHeader from './ProfileHeader';
 import { claimMatter } from '../lib/api';
+import InviteTeamMember from './InviteTeamMember';
 
 export default function MatterList({ orgId, uid, role, onSelect, onNewMatter, user }) {
   const [matters, setMatters] = useState(null);
   const [orgName, setOrgName] = useState('');
+  const [showInviteForm, setShowInviteForm] = useState(false);
 
   useEffect(() => {
     getDoc(doc(db, `organizations/${orgId}`)).then((snap) => {
@@ -73,14 +75,20 @@ export default function MatterList({ orgId, uid, role, onSelect, onNewMatter, us
           </div>
           <h1 style={{ margin: 0, fontSize: '1.4rem' }}>{orgName}</h1>
         </div>
-        <ProfileHeader user={user} role={role} onSignOut={() => signOut(auth)} />
+                <ProfileHeader user={user} role={role} onSignOut={() => signOut(auth)} />
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Matters</h2>
-        <button type="button" onClick={onNewMatter}>+ New Matter</button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {role === 'admin' && (
+            <button type="button" onClick={() => setShowInviteForm(true)}>+ Invite team member</button>
+          )}
+          <button type="button" onClick={onNewMatter}>+ New Matter</button>
+        </div>
       </div>
 
+      {showInviteForm && <InviteTeamMember onClose={() => setShowInviteForm(false)} />}
       {matters.length === 0 && <p style={{ color: '#666' }}>No matters yet.</p>}
 
       {matters.map((m) => (

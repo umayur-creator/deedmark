@@ -652,3 +652,34 @@ exports.acceptInvite = onCall(
     });
   }
 );
+
+exports.checkPendingInvite = onCall(
+  { region: 'asia-south1' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+    const email = (request.auth.token.email || '').toLowerCase();
+
+    const snap = await db.collectionGroup('invites')
+      .where('email', '==', email)
+      .where('status', '==', 'pending')
+      .limit(1)
+      .get();
+
+    if (snap.empty) {
+      return { invite: null };
+    }
+
+    const inviteDoc = snap.docs[0];
+    const orgId = inviteDoc.ref.parent.parent.id;
+    const orgSnap = await db.doc(`organizations/${orgId}`).get();
+
+    return {
+      invite: {
+        id: inviteDoc.id,
+        orgId,
+        orgName: orgSnap.exists ? orgSnap.data().name : 'this organization',
+        role: inviteDoc.data().role,
+      },
+    };
+  }
+);
