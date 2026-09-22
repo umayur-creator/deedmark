@@ -14,6 +14,7 @@ import OverallAssessment from './components/OverallAssessment';
 import DocumentViewer from './components/DocumentViewer';
 import ProfileHeader from './components/ProfileHeader';
 import AssignAssociate from './components/AssignAssociate';
+import MatterWorkspace from './components/MatterWorkspace';
 
 export default function App() {
   const [user, setUser] = useState(undefined);
@@ -93,8 +94,16 @@ export default function App() {
         setOverallStatus('idle');
       }
 
-      setMatterData(matterSnap.exists() ? matterSnap.data() : null);
+            const matter = matterSnap.exists() ? matterSnap.data() : null;
+      if (matter && matter.clientId) {
+        const clientSnap = await getDoc(doc(db, `organizations/${matter.orgId}/clients/${matter.clientId}`));
+        matter.clientName = clientSnap.exists()
+          ? `${clientSnap.data().salutation || ''} ${clientSnap.data().firstName} ${clientSnap.data().lastName || ''}`.trim()
+          : '';
+      }
+      setMatterData(matter);
     }
+    
 
     loadMatterData().catch((err) => {
       console.error('Failed to load matter data', err);
@@ -200,80 +209,53 @@ export default function App() {
     return { documentId: match.result.documentId, storagePath: match.result.storagePath, fileName: match.fileName };
   }
 
-  if (viewingDocument) {
-    return (
-      <DocumentViewer
-        matterId={matterId}
-        documentId={viewingDocument.documentId}
-        storagePath={viewingDocument.storagePath}
-        fileName={viewingDocument.fileName}
-        initialPage={viewingDocument.initialPage}
-        searchQuote={viewingDocument.searchQuote}
-        onClose={() => setViewingDocument(null)}
-      />
-    );
-  }
-
-  return (
-    <div style={{ maxWidth: 640, margin: '40px auto', fontFamily: 'sans-serif' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+   return (
+    <div style={{ fontFamily: 'sans-serif' }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '0.75rem 1.5rem', borderBottom: '1px solid #eee',
+      }}>
         <button type="button" onClick={() => setMatterId(null)}>← All matters</button>
         <ProfileHeader user={user} role={membership.role} onSignOut={() => signOut(auth)} />
       </div>
-            <h1>Deedmark</h1>
-      <p>Upload a property document to get a brief, chain of title, and missing docs.</p>
 
-            {matterData && (membership.role === 'admin' || matterData.partnerId === user.uid) && (
-        <AssignAssociate
+      <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid #eee' }}>
+                <DocumentUpload
           matterId={matterId}
-          currentAssociateIds={matterData.associateIds || []}
-          onAssigned={async () => {
+          onResult={handleResult}
+          onOverallResult={async (assessment) => {
+            setOverallAssessment(assessment);
             const snap = await getDoc(doc(db, `matters/${matterId}`));
             setMatterData(snap.exists() ? snap.data() : null);
           }}
+          onOverallStatus={setOverallStatus}
         />
-      )}
 
-      <DocumentUpload
-        matterId={matterId}
-        onResult={handleResult}
-        onOverallResult={setOverallAssessment}
-        onOverallStatus={setOverallStatus}
-      />
+        {matterData && (membership.role === 'admin' || matterData.partnerId === user.uid) && (
+          <AssignAssociate
+            matterId={matterId}
+            currentAssociateIds={matterData.associateIds || []}
+            onAssigned={async () => {
+              const snap = await getDoc(doc(db, `matters/${matterId}`));
+              setMatterData(snap.exists() ? snap.data() : null);
+            }}
+          />
+        )}
+      </div>
 
-      <OverallAssessment
-        assessment={overallAssessment}
-        status={overallStatus}
+                      <MatterWorkspace
+        matterData={matterData}
+        results={results}
+        overallAssessment={overallAssessment}
+        overallStatus={overallStatus}
         resolveSource={resolveSource}
-        onViewLocation={handleViewLocation}
+        matterId={matterId}
+        orgId={membership.orgId}
+        role={membership.role}
+        onChecklistChange={(updatedChecklist) => {
+          setMatterData((prev) => ({ ...prev, docChecklist: updatedChecklist }));
+        }}
       />
-
-      {results.length > 0 && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <h2 style={{ fontSize: '1.1rem' }}>Documents ({results.length})</h2>
-          {results.map((r, i) => (
-            <div key={i}>
-              <MatterBrief
-                result={r.result}
-                fileName={r.fileName}
-                documentId={r.result.documentId}
-                storagePath={r.result.storagePath}
-                onViewLocation={handleViewLocation}
-              />
-              <button
-                type="button"
-                onClick={() => setViewingDocument({
-                  documentId: r.result.documentId,
-                  storagePath: r.result.storagePath,
-                  fileName: r.fileName,
-                })}
-              >
-                View &amp; Annotate
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

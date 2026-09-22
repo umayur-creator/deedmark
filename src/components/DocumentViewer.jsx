@@ -11,8 +11,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 const MIN_DRAG_PX = 8; // ignore drags smaller than this -- treat as a click/scroll jiggle, not a highlight
 
-export default function DocumentViewer({ matterId, documentId, storagePath, fileName, initialPage, searchQuote, onClose }) {
-  const [fileUrl, setFileUrl] = useState(null);
+export default function DocumentViewer({ matterId, documentId, storagePath, fileName, initialPage, searchQuote, onClose, embedded, orgId }) {  const [fileUrl, setFileUrl] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [numPages, setNumPages] = useState(0);
   const [highlights, setHighlights] = useState([]);
@@ -107,12 +106,14 @@ export default function DocumentViewer({ matterId, documentId, storagePath, file
     (highlightsByPage[h.page] = highlightsByPage[h.page] || []).push(h);
   }
 
-  return (
-    <div style={{ maxWidth: 900, margin: '20px auto', fontFamily: 'sans-serif' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h2 style={{ margin: 0 }}>{fileName}</h2>
-        <button type="button" onClick={onClose}>← Back</button>
-      </div>
+    return (
+    <div style={embedded ? { fontFamily: 'sans-serif' } : { maxWidth: 900, margin: '20px auto', fontFamily: 'sans-serif' }}>
+      {!embedded && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <h2 style={{ margin: 0 }}>{fileName}</h2>
+          <button type="button" onClick={onClose}>← Back</button>
+        </div>
+      )}
       <p style={{ color: '#666', fontSize: '0.9rem' }}>
         Click and drag over any part of the page to highlight it and start a comment thread. Highlights and comments are shared with your whole team in real time.
       </p>
@@ -170,11 +171,12 @@ export default function DocumentViewer({ matterId, documentId, storagePath, file
         </Document>
       )}
 
-      {selectedHighlightId && (
+            {selectedHighlightId && (
         <CommentThread
           matterId={matterId}
           documentId={documentId}
           highlightId={selectedHighlightId}
+          orgId={orgId}
           onClose={() => setSelectedHighlightId(null)}
           onDelete={() => handleDeleteHighlight(selectedHighlightId)}
         />
@@ -183,13 +185,27 @@ export default function DocumentViewer({ matterId, documentId, storagePath, file
   );
 }
 
-function CommentThread({ matterId, documentId, highlightId, onClose, onDelete }) {
+function CommentThread({ matterId, documentId, highlightId, orgId, onClose, onDelete }) {
   const [comments, setComments] = useState([]);
   const [draft, setDraft] = useState('');
+  const [memberNames, setMemberNames] = useState({});
 
   useEffect(() => {
     return subscribeComments(matterId, documentId, highlightId, setComments);
   }, [matterId, documentId, highlightId]);
+
+  useEffect(() => {
+    if (!orgId) return;
+    import('firebase/firestore').then(({ collection, getDocs }) => {
+      import('../firebase').then(({ db }) => {
+        getDocs(collection(db, `organizations/${orgId}/members`)).then((snap) => {
+          const names = {};
+          snap.docs.forEach((d) => { names[d.id] = d.data().name || d.data().email; });
+          setMemberNames(names);
+        });
+      });
+    });
+  }, [orgId]);
 
   async function handleSend(e) {
     e.preventDefault();
@@ -215,8 +231,8 @@ function CommentThread({ matterId, documentId, highlightId, onClose, onDelete })
         {comments.length === 0 && <p style={{ color: '#999', fontSize: '0.85rem' }}>No comments yet.</p>}
         {comments.map((c) => (
           <div key={c.id} style={{ marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-            <div style={{ color: '#888', fontSize: '0.75rem' }}>
-              {c.authorId === auth.currentUser?.uid ? 'You' : 'Team member'}
+                       <div style={{ color: '#888', fontSize: '0.75rem' }}>
+              {c.authorId === auth.currentUser?.uid ? 'You' : (memberNames[c.authorId] || 'Team member')}
             </div>
             <div>{c.text}</div>
           </div>

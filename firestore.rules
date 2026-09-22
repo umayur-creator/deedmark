@@ -88,8 +88,7 @@ service cloud.firestore {
       allow read: if isSignedIn() &&
         get(/databases/$(database)/documents/userOrgMembership/$(request.auth.uid)).data.orgId == resource.data.orgId;
       allow create: if false;
-      allow update: if isOrgAdmin(request.resource.data.orgId) ||
-                       (isOnMatterTeam(resource.data) && orgRole(resource.data.orgId) == 'partner');
+      allow update: if isOrgAdmin(request.resource.data.orgId) || isOnMatterTeam(resource.data);
       allow delete: if false;
 
       match /documents/{docId} {

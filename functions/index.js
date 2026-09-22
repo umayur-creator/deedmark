@@ -399,10 +399,45 @@ exports.generateMatterAssessment = onCall(
       };
     });
 
-    const assessment = await synthesizeMatterAssessment(docs);
+       const assessment = await synthesizeMatterAssessment(docs);
 
-    await db.doc(`matters/${matterId}`).set(
-      { overallAssessment: assessment, overallAssessmentAt: FieldValue.serverTimestamp() },
+    // Reconcile the editable docChecklist against the freshly-generated missingDocs:
+    // keep items still flagged as missing (preserving their done status), drop items
+    // the AI no longer considers missing, add newly-flagged items, and always keep
+    // any custom items the user added themselves (not sourced from the AI).
+    const matterRef = db.doc(`matters/${matterId}`);
+    const matterSnap = await matterRef.get();
+    const existingChecklist = matterSnap.exists ? (matterSnap.data().docChecklist || []) : [];
+
+    const newMissingTexts = new Set((assessment.missingDocs || []).map((m) => m.text));
+    const existingByText = new Map(existingChecklist.map((item) => [item.text, item]));
+
+    const reconciledChecklist = [];
+
+    // Keep/update items that are still in the new missingDocs list.
+    for (const m of assessment.missingDocs || []) {
+      const existing = existingByText.get(m.text);
+      reconciledChecklist.push({
+        id: existing ? existing.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        text: m.text,
+        done: existing ? existing.done : false,
+        source: 'ai',
+      });
+    }
+
+    // Keep any custom (non-AI) items the user added, regardless of the new missingDocs list.
+    for (const item of existingChecklist) {
+      if (item.source === 'custom') {
+        reconciledChecklist.push(item);
+      }
+    }
+
+    await matterRef.set(
+      {
+        overallAssessment: assessment,
+        overallAssessmentAt: FieldValue.serverTimestamp(),
+        docChecklist: reconciledChecklist,
+      },
       { merge: true }
     );
 
@@ -438,15 +473,17 @@ exports.createOrganization = onCall(
       createdAt: FieldValue.serverTimestamp(),
       createdBy: uid,
     });
-    batch.set(orgRef.collection('members').doc(uid), {
+        batch.set(orgRef.collection('members').doc(uid), {
       role: 'admin',
       email,
+      name: request.auth.token.name || email,
       joinedAt: FieldValue.serverTimestamp(),
     });
     batch.set(membershipRef, {
       orgId: orgRef.id,
       role: 'admin',
       email,
+      name: request.auth.token.name || email,
     });
 
     await batch.commit();
@@ -636,16 +673,19 @@ exports.acceptInvite = onCall(
       if (invite.status !== 'pending') throw new HttpsError('failed-precondition', 'This invite is no longer valid.');
       if (invite.email !== email) throw new HttpsError('permission-denied', 'This invite was sent to a different email.');
 
-      tx.set(db.doc(`organizations/${orgId}/members/${uid}`), {
+            tx.set(db.doc(`organizations/${orgId}/members/${uid}`), {
         role: invite.role,
         email,
+        name: request.auth.token.name || email,
         joinedAt: FieldValue.serverTimestamp(),
       });
       tx.set(db.doc(`userOrgMembership/${uid}`), {
         orgId,
         role: invite.role,
         email,
+        name: request.auth.token.name || email,
       });
+
       tx.update(inviteRef, { status: 'accepted', acceptedBy: uid, acceptedAt: FieldValue.serverTimestamp() });
 
       return { orgId, role: invite.role };
