@@ -101,11 +101,12 @@ export default function MatterWorkspace({
                 resolveSource={resolveSource}
                 onViewLocation={handleViewLocation}
               />
-                                         <DocChecklist
+               <DocChecklist
                 matterId={matterId}
                 checklist={matterData?.docChecklist || []}
                 onChange={onChecklistChange}
                 canRemove={role === 'admin' || role === 'partner'}
+                matterTitle={landDetails}
               />
             </>
           )}
