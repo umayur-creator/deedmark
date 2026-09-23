@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
+import { doc, getDoc, collection, getDocs, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions } from './firebase';
 import Login from './components/Login';
@@ -101,7 +101,11 @@ export default function App() {
           ? `${clientSnap.data().salutation || ''} ${clientSnap.data().firstName} ${clientSnap.data().lastName || ''}`.trim()
           : '';
       }
-      setMatterData(matter);
+            setMatterData(matter);
+      if (matter && membership && membership.role === 'partner' && matter.partnerId === user.uid) {        updateDoc(doc(db, `matters/${matterId}`), {
+          lastPartnerViewedAt: serverTimestamp(),
+        }).catch((err) => console.error('Failed to update lastPartnerViewedAt', err));
+      }
     }
     
 

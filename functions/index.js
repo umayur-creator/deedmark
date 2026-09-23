@@ -239,17 +239,22 @@ exports.analyzeDocument = onCall(
       createdAt: FieldValue.serverTimestamp(),
     });
 
-    await db.collection(`matters/${matterId}/analysis`).add({
-      documentId: docRef.id,
-      brief: analysis.brief,
-      chainOfTitle: analysis.chainOfTitle,
-      missingDocs: analysis.missingDocs,
-      flags: analysis.flags,
-      createdAt: FieldValue.serverTimestamp(),
-    });
+      await db.collection(`matters/${matterId}/analysis`).add({
+    documentId: docRef.id,
+    brief: analysis.brief,
+    chainOfTitle: analysis.chainOfTitle,
+    missingDocs: analysis.missingDocs,
+    flags: analysis.flags,
+    createdAt: FieldValue.serverTimestamp(),
+  });
 
-      return { ...analysis, documentId: docRef.id, storagePath };
-  }
+  await db.doc(`matters/${matterId}`).set(
+    { lastDocumentAt: FieldValue.serverTimestamp() },
+    { merge: true }
+  );
+
+    return { ...analysis, documentId: docRef.id, storagePath };
+}
 );
 
 /**
